@@ -1,24 +1,5 @@
 package golidar
 
-/**
-package main
-
-import (
-	"time"
-
-	"github.com/golidar"
-)
-
-func main() {
-	lidar := golidar.NewRPLidar("/dev/ttyUSB0", 115200, time.Millisecond*500)
-	lidar.Connect()
-	lidar.StartMotor()
-	time.Sleep(time.Second * 10)
-	lidar.StopMotor()
-	time.Sleep(time.Second * 10)
-	lidar.Disconnect()
-}
-*/
 import (
 	"encoding/binary"
 	"log"
@@ -36,7 +17,7 @@ const (
 	resetrByte       byte   = 0x40
 	scanByte         byte   = 0x20
 	forceScanByte    byte   = 0x21
-	descriptorLength        = 7
+	descriptorLength int    = 7
 	infoLength              = 20
 	healthLength            = 3
 	infoType                = 4
@@ -133,6 +114,25 @@ func (rpl *RPLidar) StopMotor() {
 	rpl.motorActive = false
 }
 
+// GetHealth returns a string representing the status and an error code representing the health of the lidar
+func (rpl *RPLidar) GetHealth() (string, int) {
+	rpl.sendCmd(getHealthByte)
+	asize, single, dtype := rpl.readDescriptor()
+	if asize != healthLength {
+		log.Fatal("Unexpected size of get health response")
+	}
+	if !single {
+		log.Fatal("Expected single reponse mode")
+	}
+	if dtype != healthType {
+		log.Fatal("Expected response of get health type")
+	}
+	data := rpl.readResponse(asize)
+	status := healthStatus[int(data[0])]
+	errcode := int(data[1])<<8 + int(data[2])
+	return status, errcode
+}
+
 func (rpl *RPLidar) sendPayloadCmd(cmd byte, payload []byte) {
 	req := []byte{}
 	size := byte(len(payload))
@@ -160,4 +160,32 @@ func (rpl *RPLidar) sendCmd(cmd byte) {
 	req = append(req, syncByte, cmd)
 	rpl.serialPort.Write(req)
 	log.Printf("Sent command: %v\n", req)
+}
+
+func (rpl *RPLidar) readResponse(size int) []byte {
+	res := make([]byte, size)
+	asize, err := rpl.serialPort.Read(res)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if asize != size {
+		log.Fatalf("Expected to read %v bytes, read %v instead\n", size, asize)
+	}
+	return res
+}
+
+func (rpl *RPLidar) readDescriptor() (int, bool, int) {
+	descriptor := make([]byte, descriptorLength)
+	asize, err := rpl.serialPort.Read(descriptor)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if asize != descriptorLength {
+		log.Fatalf("Expected to read %v bytes, read %v instead\n", descriptorLength, asize)
+	}
+	if descriptor[0] != syncByte || descriptor[1] != syncByte2 {
+		log.Fatal("Expected descriptor starting bytes")
+	}
+	single := (descriptor[descriptorLength-2] == 0)
+	return int(descriptor[2]), single, int(descriptor[descriptorLength-1])
 }
