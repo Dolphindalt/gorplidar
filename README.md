@@ -1,6 +1,6 @@
 # Go RPLidar
 
-[![GoDoc](https://godoc.org/github.com/dolphindalt/gorplidar?status.svg)](https://godoc.org/gituhb.com/dolphindalt/gorplidar)
+[![GoDoc](https://godoc.org/github.com/dolphindalt/gorplidar?status.svg)](https://godoc.org/github.com/Dolphindalt/gorplidar)
 
 Package gorplidar provides a library to control the Slamtec RPLidar.
 
@@ -49,7 +49,7 @@ func main() {
 
 ## Documentation
 
-https://godoc.org/github.com/dolphindalt/gorplidar
+https://godoc.org/github.com/Dolphindalt/gorplidar
 
 ## License
 
