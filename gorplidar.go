@@ -1,12 +1,14 @@
 /*
 
-Package golidar provides a library to control the Slamtec RPLidar
+Package gorplidar provides a library to control the Slamtec RPLidar.
+Protocol: https://www.robotshop.com/media/files/pdf2/rpk-02-communication-protocol.pdf
 
 */
-package golidar
+package gorplidar
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -32,25 +34,26 @@ const (
 	maxMotorPWM      uint16 = 1023
 	defaultMotorPWM  uint16 = 600
 	setPWMByte       byte   = 0xF0
-	maxBufferSize    int    = 500
+	maxBufferSize    int    = 1000
 )
 
+// healthStatus used in GetHealth function string return
 var healthStatus = map[int]string{
 	0: "Good",
 	1: "Warning",
 	2: "Error",
 }
 
-// RPLidar holds information used to communicate through serial to the lidar
+// RPLidar holds information used to communicate through serial to the lidar.
 type RPLidar struct {
 	serialPort  *serial.Port
 	portName    string
-	Baudrate    int
+	baudrate    int
 	MotorActive bool
 	options     *serial.Options
 }
 
-// RPLidarInfo is returned by GetDeviceInfo
+// RPLidarInfo is returned by GetDeviceInfo.
 type RPLidarInfo struct {
 	model        int
 	firmware     [2]int
@@ -58,71 +61,75 @@ type RPLidarInfo struct {
 	serialNumber string
 }
 
-// RPLidarPoint represents a single point of data from a lidar scan
+// RPLidarPoint represents a single point of data from a lidar scan.
 type RPLidarPoint struct {
 	Quality  int
 	Angle    float32
 	Distance float32
 }
 
-// NewRPLidar creates an instance of RPLidar
+// NewRPLidar creates an instance of RPLidar.
+// The portName refers to the name of the serial port.
+// Baudrate is the rate at which data is transfered through the serial.
 func NewRPLidar(portName string, baudrate int) *RPLidar {
 	return &RPLidar{nil, portName, baudrate, false, nil}
 }
 
-// Connect establishes a serial communication channel with the lidar using the information provided form RPLidar
-func (rpl *RPLidar) Connect() {
+// Connect establishes a serial communication channel with the lidar using the information provided form RPLidar.
+func (rpl *RPLidar) Connect() error {
 	if rpl.serialPort != nil {
 		err := rpl.serialPort.Close()
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 	}
 	options := serial.RawOptions
 	options.Mode = serial.MODE_READ_WRITE
-	options.BitRate = rpl.Baudrate
+	options.BitRate = rpl.baudrate
 	serialPort, err := options.Open(rpl.portName)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	rpl.options = &options
 	rpl.serialPort = serialPort
+	return nil
 }
 
-// Disconnect closes serial communication
-func (rpl *RPLidar) Disconnect() {
+// Disconnect closes serial communication.
+func (rpl *RPLidar) Disconnect() error {
 	if rpl.serialPort == nil {
-		return
+		return nil
 	}
 	err := rpl.serialPort.Close()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
+	return nil
 }
 
-// PWM stands for Pulse Width Modulation
-func (rpl *RPLidar) PWM(pwm uint16) {
+// PWM stands for Pulse Width Modulation.
+// pwm can be zero or less than or equal to 1023.
+func (rpl *RPLidar) PWM(pwm uint16) error {
 	if !(0 <= pwm && pwm <= maxMotorPWM) {
-		log.Fatal("specified PWM was in an invalid range")
+		return errors.New("specified PWM was in an invalid range")
 	}
 	payload := make([]byte, 2)
 	payload[0] = byte(pwm & 0xFF)
 	payload[1] = byte(pwm >> 8)
 	rpl.sendPayloadCmd(setPWMByte, payload)
+	return nil
 }
 
-// StartMotor toggles the motor into an active spinning state
+// StartMotor toggles the motor into an active spinning state.
 func (rpl *RPLidar) StartMotor() {
-	log.Printf("Starting motor...\n")
 	rpl.options.DTR = serial.DTR_OFF // start A1 motor
 	rpl.serialPort.Apply(rpl.options)
 	rpl.PWM(defaultMotorPWM) // start A2 motor
 	rpl.MotorActive = true
 }
 
-// StopMotor brings the motor to zero velocity
+// StopMotor brings the motor to zero velocity.
 func (rpl *RPLidar) StopMotor() {
-	log.Printf("Stopping motor...\n")
 	rpl.PWM(0) // stop A2 motor
 	time.Sleep(time.Millisecond * 2)
 	rpl.options.DTR = serial.DTR_ON // stop A1 motor
@@ -130,45 +137,46 @@ func (rpl *RPLidar) StopMotor() {
 	rpl.MotorActive = false
 }
 
-// StopScan forces the lidar to exit the current scan
+// StopScan forces the lidar to exit the current scan.
 func (rpl *RPLidar) StopScan() {
 	rpl.sendCmd(stopByte)
 	time.Sleep(time.Millisecond * 1)
 }
 
-// Reset forces the lidar to reset into a state similar to after powering up
+// Reset forces the lidar to reset into a state similar to after powering up.
 func (rpl *RPLidar) Reset() {
 	rpl.sendCmd(resetByte)
 	time.Sleep(time.Millisecond * 2)
 }
 
-// StartScan begins a scan
-func (rpl *RPLidar) StartScan(scans int) []*RPLidarPoint {
+// StartScan begins a lidar scan for the amount of scan cycles desired.
+// The scans parameter refers to how many scan cycles will occur.
+func (rpl *RPLidar) StartScan(scans int) ([]*RPLidarPoint, error) {
 	totalScans := 0
+	scan := []*RPLidarPoint{}
 	rpl.sendCmd(scanByte)
 	asize, single, dtype := rpl.readDescriptor()
 	if asize != 5 {
-		log.Fatalf("Scan length %v, expected 5\n", asize)
+		return scan, fmt.Errorf("Scan length %v, expected 5", asize)
 	}
 	if single {
-		log.Fatal("Expected multiple response mode for start scan")
+		return scan, errors.New("Expected multiple response mode for start scan")
 	}
 	if dtype != scanType {
-		log.Fatal("Expected response of start scan type")
+		return scan, errors.New("Expected response of start scan type")
 	}
-	scan := []*RPLidarPoint{}
 	for {
 		data := rpl.readResponse(asize)
 		newScan, quality, angle, distance := rpl.parseRawScanData(data)
 		dataInBuffer, err := rpl.serialPort.InputWaiting()
 		if err != nil {
-			log.Fatal(err)
+			return scan, err
 		}
 		if dataInBuffer > asize*maxBufferSize { // stops buffer lag
 			buf := make([]byte, dataInBuffer)
 			_, err := rpl.serialPort.Read(buf)
 			if err != nil {
-				log.Fatal(err)
+				return scan, err
 			}
 		}
 		if newScan {
@@ -182,55 +190,56 @@ func (rpl *RPLidar) StartScan(scans int) []*RPLidarPoint {
 			scan = append(scan, &RPLidarPoint{quality, angle, distance})
 		}
 	}
-	return scan
+	return scan, nil
 }
 
-// GetDeviceInfo returns a struct containing information about the lidar
-func (rpl *RPLidar) GetDeviceInfo() *RPLidarInfo {
+// DeviceInfo returns a struct containing information about the lidar.
+func (rpl *RPLidar) DeviceInfo() (*RPLidarInfo, error) {
 	rpl.sendCmd(getInfoByte)
 	asize, single, dtype := rpl.readDescriptor()
 	if asize != infoLength {
-		log.Fatal("Unexpected size of get health response")
+		return nil, errors.New("Unexpected size of get health response")
 	}
 	if !single {
-		log.Fatal("Expected single reponse mode")
+		return nil, errors.New("Expected single reponse mode")
 	}
 	if dtype != infoType {
-		log.Fatal("Expected response of get health type")
+		return nil, errors.New("Expected response of get health type")
 	}
 	data := rpl.readResponse(asize)
 	serialHex := fmt.Sprintf("%x", data[4:])
 	serialNumber, err := hex.DecodeString(serialHex)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 	return &RPLidarInfo{
 		int(data[0]),
 		[2]int{int(data[2]), int(data[1])},
 		int(data[3]),
 		string(serialNumber),
-	}
+	}, nil
 }
 
-// GetHealth returns a string representing the status and an error code representing the health of the lidar
-func (rpl *RPLidar) GetHealth() (string, int) {
+// Health returns a string representing the status and an error code representing the health of the lidar.
+func (rpl *RPLidar) Health() (string, int, error) {
 	rpl.sendCmd(getHealthByte)
 	asize, single, dtype := rpl.readDescriptor()
 	if asize != healthLength {
-		log.Fatal("Unexpected size of get health response")
+		return "", 0, errors.New("Unexpected size of get health response")
 	}
 	if !single {
-		log.Fatal("Expected single reponse mode")
+		return "", 0, errors.New("Expected single reponse mode")
 	}
 	if dtype != healthType {
-		log.Fatal("Expected response of get health type")
+		return "", 0, errors.New("Expected response of get health type")
 	}
 	data := rpl.readResponse(asize)
 	status := healthStatus[int(data[0])]
 	errcode := int(data[1])<<8 + int(data[2])
-	return status, errcode
+	return status, errcode, nil
 }
 
+// parseRawScanData converts data from a scan into a slice of *RPLidarPoints.
 // Format of the Data Response Packets:
 // 0 : quality 6 bits, |S| 1 bit, S 1 bit
 // 1 : angle 7 bits, C 1 bit
@@ -253,6 +262,7 @@ func (rpl *RPLidar) parseRawScanData(data []byte) (bool, int, float32, float32) 
 	return s, quality, angle, distance
 }
 
+// sendPayloadCmd sends a command bearing extra data to the lidar.
 func (rpl *RPLidar) sendPayloadCmd(cmd byte, payload []byte) {
 	req := []byte{}
 	size := byte(len(payload))
@@ -272,16 +282,16 @@ func (rpl *RPLidar) sendPayloadCmd(cmd byte, payload []byte) {
 	if count != len(req) {
 		log.Fatal("Failed to write all bytes")
 	}
-	log.Printf("Sent command: %v\n", req)
 }
 
+// sendCmd sends a one byte command to the lidar.
 func (rpl *RPLidar) sendCmd(cmd byte) {
 	req := []byte{}
 	req = append(req, syncByte, cmd)
 	rpl.serialPort.Write(req)
-	log.Printf("Sent command: %v\n", req)
 }
 
+// readResonse returns a byte slice of a specified size of bytes recieved from the lidar.
 func (rpl *RPLidar) readResponse(size int) []byte {
 	res := make([]byte, size)
 	asize, err := rpl.serialPort.Read(res)
@@ -291,10 +301,13 @@ func (rpl *RPLidar) readResponse(size int) []byte {
 	if asize != size {
 		log.Fatalf("Expected to read %v bytes, read %v instead\n", size, asize)
 	}
-	log.Printf("Read response: %v\n", res)
 	return res
 }
 
+// readDescriptor returns information about data ready to be recieved by the client.
+// The first int is the size of the response.
+// The bool is true if the lidar is in single response mode, else multi response mode.
+// The last int is the type of response.
 func (rpl *RPLidar) readDescriptor() (int, bool, int) {
 	descriptor := make([]byte, descriptorLength)
 	asize, err := rpl.serialPort.Read(descriptor)
