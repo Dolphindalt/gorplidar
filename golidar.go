@@ -1,7 +1,8 @@
 package golidar
 
 import (
-	"encoding/binary"
+	"encoding/hex"
+	"fmt"
 	"log"
 	"time"
 
@@ -18,11 +19,11 @@ const (
 	scanByte         byte   = 0x20
 	forceScanByte    byte   = 0x21
 	descriptorLength int    = 7
-	infoLength              = 20
-	healthLength            = 3
-	infoType                = 4
-	healthType              = 6
-	scanType                = 129
+	infoLength       int    = 20
+	healthLength     int    = 3
+	infoType         int    = 4
+	healthType       int    = 6
+	scanType         int    = 129
 	maxMotorPWM      uint16 = 1023
 	defaultMotorPWM  uint16 = 600
 	setPWMByte       byte   = 0xF0
@@ -41,6 +42,14 @@ type RPLidar struct {
 	baudrate    int
 	timeout     time.Duration
 	motorActive bool
+}
+
+// RPLidarInfo is returned by GetDeviceInfo
+type RPLidarInfo struct {
+	model        int
+	firmware     [2]int
+	hardware     int
+	serialNumber string
 }
 
 // NewRPLidar creates an instance of RPLidar
@@ -83,18 +92,15 @@ func (rpl *RPLidar) PWM(pwm uint16) {
 		log.Fatal("specified PWM was in an invalid range")
 	}
 	payload := make([]byte, 2)
-	binary.LittleEndian.PutUint16(payload[0:2], pwm)
+	payload[0] = byte(pwm & 0xFF)
+	payload[1] = byte(pwm >> 8)
 	rpl.sendPayloadCmd(setPWMByte, payload)
 }
 
 // StartMotor toggles the motor into an active spinning state
 func (rpl *RPLidar) StartMotor() {
 	log.Printf("Starting motor...\n")
-	dtr, err := rpl.serialPort.DTR()
-	if err != nil {
-		log.Fatal(err)
-	}
-	err = rpl.serialPort.SetDTR(dtr)
+	err := rpl.serialPort.SetDTR(serial.DTR_OFF)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -106,12 +112,39 @@ func (rpl *RPLidar) StartMotor() {
 func (rpl *RPLidar) StopMotor() {
 	log.Printf("Stopping motor...\n")
 	rpl.PWM(0)
-	time.Sleep(time.Millisecond * 500)
-	err := rpl.serialPort.SetDTR(0)
+	time.Sleep(time.Millisecond * 2)
+	err := rpl.serialPort.SetDTR(serial.DTR_ON)
 	if err != nil {
 		log.Fatal(err)
 	}
 	rpl.motorActive = false
+}
+
+// GetDeviceInfo returns a struct containing information about the lidar
+func (rpl *RPLidar) GetDeviceInfo() *RPLidarInfo {
+	rpl.sendCmd(getInfoByte)
+	asize, single, dtype := rpl.readDescriptor()
+	if asize != infoLength {
+		log.Fatal("Unexpected size of get health response")
+	}
+	if !single {
+		log.Fatal("Expected single reponse mode")
+	}
+	if dtype != infoType {
+		log.Fatal("Expected response of get health type")
+	}
+	data := rpl.readResponse(asize)
+	serialHex := fmt.Sprintf("%x", data[4:])
+	serialNumber, err := hex.DecodeString(serialHex)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return &RPLidarInfo{
+		int(data[0]),
+		[2]int{int(data[2]), int(data[1])},
+		int(data[3]),
+		string(serialNumber),
+	}
 }
 
 // GetHealth returns a string representing the status and an error code representing the health of the lidar
