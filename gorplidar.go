@@ -161,20 +161,28 @@ func (rpl *RPLidar) PWM(pwm uint16) error {
 }
 
 // StartMotor toggles the motor into an active spinning state.
-func (rpl *RPLidar) StartMotor() {
+func (rpl *RPLidar) StartMotor() error {
+	if rpl.serialPort == nil {
+		return errors.New("serial port not detected")
+	}
 	rpl.options.DTR = serial.DTR_OFF // start A1 motor
 	rpl.serialPort.Apply(rpl.options)
 	rpl.PWM(defaultMotorPWM) // start A2 motor
 	rpl.MotorActive = true
+	return nil
 }
 
 // StopMotor brings the motor to zero velocity.
-func (rpl *RPLidar) StopMotor() {
+func (rpl *RPLidar) StopMotor() error {
+	if rpl.serialPort == nil {
+		return errors.New("serial port not detected")
+	}
 	rpl.PWM(0) // stop A2 motor
 	time.Sleep(time.Millisecond * 2)
 	rpl.options.DTR = serial.DTR_ON // stop A1 motor
 	rpl.serialPort.Apply(rpl.options)
 	rpl.MotorActive = false
+	return nil
 }
 
 // StopScan forces the lidar to exit the current scan.
