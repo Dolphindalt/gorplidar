@@ -1,7 +1,47 @@
 /*
 
 Package gorplidar provides a library to control the Slamtec RPLidar.
+
 Protocol: https://www.robotshop.com/media/files/pdf2/rpk-02-communication-protocol.pdf
+
+This package aims to satisfy the communication protocol specified in the document linked above.
+
+Currently, not all protocols are supported. Configurability could also be improved,
+as many options are set by default on instantiation of the RPLidar structure.
+
+Example usage:
+
+	package main
+
+	import (
+		"fmt"
+		"log"
+
+		"github.com/gorplidar"
+	)
+
+	func main() {
+		lidar := gorplidar.NewRPLidar("/dev/ttyUSB0", 115200)
+		lidar.Connect()
+		status, errcode, err := lidar.Health()
+		if err != nil {
+			log.Fatal(err)
+		} else if status == "Warning" {
+			log.Printf("Lidar status: %v Error Code: %v\n", status, errcode)
+		} else if status == "Error" {
+			log.Fatalf("Lidar status: %v Error Code: %v\n", status, errcode)
+		}
+		lidar.StartMotor()
+		scanResults, err := lidar.StartScan(3)
+		if err != nil {
+			log.Fatal(err)
+		}
+		for _, p := range scanResults {
+			fmt.Printf("Quality: %v\tAngle: %.2f\tDistance: %.2f\n", p.Quality, p.Angle, p.Distance)
+		}
+		lidar.StopMotor()
+		lidar.Disconnect()
+	}
 
 */
 package gorplidar
@@ -55,10 +95,10 @@ type RPLidar struct {
 
 // RPLidarInfo is returned by GetDeviceInfo.
 type RPLidarInfo struct {
-	model        int
-	firmware     [2]int
-	hardware     int
-	serialNumber string
+	Model        int
+	Firmware     [2]int
+	Hardware     int
+	SerialNumber string
 }
 
 // RPLidarPoint represents a single point of data from a lidar scan.

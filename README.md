@@ -2,7 +2,14 @@
 
 [![GoDoc](https://godoc.org/github.com/dolphindalt/gorplidar?status.svg)](https://godoc.org/gituhb.com/dolphindalt/gorplidar)
 
-Package gorplidar provides a go library for communicating with the SLAMTEC RPLIDAR Low Cost 360 Degree Laser Range Scanner.
+Package gorplidar provides a library to control the Slamtec RPLidar.
+
+Protocol: https://www.robotshop.com/media/files/pdf2/rpk-02-communication-protocol.pdf
+
+This package aims to satisfy the communication protocol specified in the document linked above.
+
+Currently, not all protocols are supported. Configurability could also be improved,
+as many options are set by default on instantiation of the RPLidar structure.
 
 ## Usage
 
