@@ -1,25 +1,19 @@
 language: go
 
-os:
-  - linux
-
 go:
   - 1.10.x
-  - 1.11.x
+  - master
 
-env:
-  - TEST_OS=linux TEST_ARCH=386
-  - TEST_OS=linux TEST_ARCH=amd64
-  - TEST_OS=linux TEST_ARCH=arm
-  - TEST_OS=windows TEST_ARCH=386
-  - TEST_OS=windows TEST_ARCH=amd64
-  - TEST_OS=darwin TEST_ARCH=386
-  - TEST_OS=darwin TEST_ARCH=amd64
-  - TEST_OS=freebsd TEST_ARCH=amd64
-  - TEST_OS=openbsd TEST_ARCH=amd64
-  - TEST_OS=openbsd TEST_ARCH=386
-  - TEST_OS=openbsd TEST_ARCH=arm
+os:
+  - linux
+  - osx
+
+dist: trusty
+sudo: false
+
+install: true
 
 script:
-  - GOARM=5 GO386=387 GOOS=$TEST_OS GOARCH=$TEST_ARCH go get github.com/mikepb/go-serial
-  - GOARM=5 GO386=387 GOOS=$TEST_OS GOARCH=$TEST_ARCH go test ./...
+  - go get github.com/mikepb/go-serial
+  - go build
+  - go test
