@@ -1,7 +1,7 @@
 # Go RPLidar
 
 [![GoDoc](https://godoc.org/github.com/Dolphindalt/gorplidar?status.svg)](https://godoc.org/github.com/Dolphindalt/gorplidar)
-[![TravisCI](https://travis-ci.org/Dolphindalt/gorplidar.svg?branch=v1)](https://travis-ci.org/Dolphindalt/gorplidar)
+[![TravisCI](https://travis-ci.org/Dolphindalt/gorplidar.svg?branch=v1)](https://travis-ci.org/Dolphindalt/gorplidar.svg?branch=master)
 
 Package gorplidar provides a library to control the Slamtec RPLidar.
 
