@@ -91,6 +91,7 @@ type RPLidar struct {
 	baudrate    int
 	MotorActive bool
 	options     *serial.Options
+	Connected   bool
 }
 
 // RPLidarInfo is returned by GetDeviceInfo.
@@ -112,12 +113,12 @@ type RPLidarPoint struct {
 // The portName refers to the name of the serial port.
 // Baudrate is the rate at which data is transfered through the serial.
 func NewRPLidar(portName string, baudrate int) *RPLidar {
-	return &RPLidar{nil, portName, baudrate, false, nil}
+	return &RPLidar{nil, portName, baudrate, false, nil, false}
 }
 
 // Connect establishes a serial communication channel with the lidar using the information provided form RPLidar.
 func (rpl *RPLidar) Connect() error {
-	if rpl.serialPort != nil {
+	if rpl.serialPort != nil && rpl.Connected {
 		err := rpl.serialPort.Close()
 		if err != nil {
 			return err
@@ -126,24 +127,27 @@ func (rpl *RPLidar) Connect() error {
 	options := serial.RawOptions
 	options.Mode = serial.MODE_READ_WRITE
 	options.BitRate = rpl.baudrate
+
 	serialPort, err := options.Open(rpl.portName)
 	if err != nil {
 		return err
 	}
 	rpl.options = &options
 	rpl.serialPort = serialPort
+	rpl.Connected = true
 	return nil
 }
 
 // Disconnect closes serial communication.
 func (rpl *RPLidar) Disconnect() error {
-	if rpl.serialPort == nil {
+	if rpl.serialPort == nil || !rpl.Connected {
 		return nil
 	}
 	err := rpl.serialPort.Close()
 	if err != nil {
 		return err
 	}
+	rpl.Connected = false
 	return nil
 }
 

@@ -2,18 +2,21 @@ package gorplidar
 
 import (
 	"testing"
-
-	"github.com/mikepb/go-serial"
 )
 
 func TestRplidarInit(t *testing.T) {
-	info, err := serial.ListPorts()
-	if err != nil || len(info) <= 0 {
-		t.Fatal("no serial ports detected")
+	lidar := NewRPLidar("/dev/ttyUSB0", 115200)
+	err := lidar.Connect()
+	if err != nil {
+		t.Fatal(err)
 	}
-	port := info[0].Name()
-	lidar := NewRPLidar(port, 11520)
-	lidar.Connect()
+	status, errcode, err := lidar.Health()
+	if status != "Good" {
+		t.Fatalf("%v: %v\n", status, errcode)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
 	lidar.StartMotor()
 	lidar.StopMotor()
 	lidar.Disconnect()
