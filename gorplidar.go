@@ -93,6 +93,7 @@ type RPLidar struct {
 	MotorActive bool
 	options     *serial.Options
 	Connected   bool
+	Scanning    bool
 }
 
 // RPLidarInfo is returned by GetDeviceInfo.
@@ -114,7 +115,7 @@ type RPLidarPoint struct {
 // The portName refers to the name of the serial port.
 // Baudrate is the rate at which data is transfered through the serial.
 func NewRPLidar(portName string, baudrate int) *RPLidar {
-	return &RPLidar{nil, portName, baudrate, false, nil, false}
+	return &RPLidar{nil, portName, baudrate, false, nil, false, false}
 }
 
 // Connect establishes a serial communication channel with the lidar using the information provided form RPLidar.
@@ -195,7 +196,8 @@ func (rpl *RPLidar) StopMotor() error {
 // StopScan forces the lidar to exit the current scan.
 func (rpl *RPLidar) StopScan() {
 	rpl.sendCmd(stopByte)
-	time.Sleep(time.Millisecond * 1)
+	rpl.Scanning = false
+	time.Sleep(time.Millisecond * 20)
 }
 
 // Reset forces the lidar to reset into a state similar to after powering up.
@@ -206,26 +208,38 @@ func (rpl *RPLidar) Reset() {
 
 // StartScan begins a lidar scan for the amount of scan cycles desired.
 // The scans parameter refers to how many scan cycles will occur.
-func (rpl *RPLidar) StartScan(scans int) ([]*RPLidarPoint, error) {
-	totalScans := 0
+func (rpl *RPLidar) StartScan() ([]*RPLidarPoint, error) {
+	if !rpl.Connected {
+		return nil, errors.New("The device is not connected")
+	}
+	if !rpl.MotorActive {
+		rpl.StartMotor()
+	}
+	rpl.StopScan()
 	scan, asize, err := rpl.startScanCmd(scanByte)
 	if err != nil {
-		log.Fatal(err)
+		status, errcode, err := rpl.Health()
+		if err != nil {
+			log.Fatalf("Health check failed after scan failed: %v\n", err)
+		} else if status == "Warning" {
+			log.Printf("Warning status on health check after failed scan: %v\n", errcode)
+		} else if status == "Error" {
+			log.Fatalf("Error status on health check after failed scan: %v\n", errcode)
+		}
 	}
+	rpl.readResponse(asize) // disregard first measurment as the results may be incomplete
 	for {
 		data := rpl.readResponse(asize)
 		newScan, quality, angle, distance := rpl.parseRawScanData(data)
-		if newScan {
-			if totalScans < scans {
-				totalScans++
-			} else {
-				break
-			}
+		if newScan && rpl.Scanning {
+			break
 		}
+		rpl.Scanning = true
 		if quality > 0 && distance > 0 {
 			scan = append(scan, &RPLidarPoint{quality, angle, distance})
 		}
 	}
+	rpl.StopScan()
 	return scan, nil
 }
 
@@ -235,7 +249,10 @@ func (rpl *RPLidar) StartScan(scans int) ([]*RPLidarPoint, error) {
 // The first int returned is the standard, the second is the express.
 func (rpl *RPLidar) SampleRate() (int, int, error) {
 	rpl.sendCmd(sampleRateByte)
-	asize, single, _ := rpl.readDescriptor()
+	asize, single, _, err := rpl.readDescriptor()
+	if err != nil {
+		return 0, 0, err
+	}
 	if asize != 4 {
 		return 0, 0, fmt.Errorf("Sample rate length %v, expected 4", asize)
 	}
@@ -251,7 +268,10 @@ func (rpl *RPLidar) SampleRate() (int, int, error) {
 // DeviceInfo returns a struct containing information about the lidar.
 func (rpl *RPLidar) DeviceInfo() (*RPLidarInfo, error) {
 	rpl.sendCmd(getInfoByte)
-	asize, single, dtype := rpl.readDescriptor()
+	asize, single, dtype, err := rpl.readDescriptor()
+	if err != nil {
+		return nil, err
+	}
 	if asize != infoLength {
 		return nil, errors.New("Unexpected size of get health response")
 	}
@@ -278,7 +298,10 @@ func (rpl *RPLidar) DeviceInfo() (*RPLidarInfo, error) {
 // Health returns a string representing the status and an error code representing the health of the lidar.
 func (rpl *RPLidar) Health() (string, int, error) {
 	rpl.sendCmd(getHealthByte)
-	asize, single, dtype := rpl.readDescriptor()
+	asize, single, dtype, err := rpl.readDescriptor()
+	if err != nil {
+		return "", 0, err
+	}
 	if asize != healthLength {
 		return "", 0, errors.New("Unexpected size of get health response")
 	}
@@ -297,7 +320,10 @@ func (rpl *RPLidar) Health() (string, int, error) {
 func (rpl *RPLidar) startScanCmd(cmd byte) ([]*RPLidarPoint, int, error) {
 	scan := []*RPLidarPoint{}
 	rpl.sendCmd(cmd)
-	asize, single, dtype := rpl.readDescriptor()
+	asize, single, dtype, err := rpl.readDescriptor()
+	if err != nil {
+		return nil, 0, err
+	}
 	if asize != 5 {
 		return nil, 0, fmt.Errorf("Scan length %v, expected 5", asize)
 	}
@@ -379,18 +405,18 @@ func (rpl *RPLidar) readResponse(size int) []byte {
 // The first int is the size of the response.
 // The bool is true if the lidar is in single response mode, else multi response mode.
 // The last int is the type of response.
-func (rpl *RPLidar) readDescriptor() (int, bool, int) {
+func (rpl *RPLidar) readDescriptor() (int, bool, int, error) {
 	descriptor := make([]byte, descriptorLength)
 	asize, err := rpl.serialPort.Read(descriptor)
 	if err != nil {
-		log.Fatal(err)
+		return 0, false, 0, err
 	}
 	if asize != descriptorLength {
-		log.Fatalf("Expected to read %v bytes, read %v instead\n", descriptorLength, asize)
+		return 0, false, 0, fmt.Errorf("expected to read %v bytes, read %v instead", descriptorLength, asize)
 	}
 	if descriptor[0] != syncByte || descriptor[1] != syncByte2 {
-		log.Fatal("Expected descriptor starting bytes")
+		return 0, false, 0, errors.New("expected descriptor starting bytes")
 	}
 	single := (descriptor[descriptorLength-2] == 0)
-	return int(descriptor[2]), single, int(descriptor[descriptorLength-1])
+	return int(descriptor[2]), single, int(descriptor[descriptorLength-1]), nil
 }
