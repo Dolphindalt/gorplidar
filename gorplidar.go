@@ -134,7 +134,6 @@ func (rpl *RPLidar) Connect() error {
 	if err != nil {
 		return err
 	}
-	serialPort.SetReadDeadline(time.Now().Add(time.Second * 5))
 	rpl.options = &options
 	rpl.serialPort = serialPort
 	rpl.Connected = true
@@ -257,7 +256,6 @@ func (rpl *RPLidar) StartScan(scanCycles int) ([]*RPLidarPoint, error) {
 			scan = append(scan, &RPLidarPoint{quality, angle, distance})
 		}
 	}
-	log.Printf("Waiting input: %v\n", v)
 
 	return scan, nil
 }
@@ -338,6 +336,7 @@ func (rpl *RPLidar) Health() (string, int, error) {
 
 func (rpl *RPLidar) startScanCmd(cmd byte) ([]*RPLidarPoint, int, error) {
 	scan := []*RPLidarPoint{}
+	rpl.serialPort.SetReadDeadline(time.Now().Add(time.Second * 3))
 	rpl.serialPort.ResetInput()
 	time.Sleep(time.Millisecond * 100) // this works, trust me
 	rpl.sendCmd(cmd)
