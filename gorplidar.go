@@ -134,6 +134,7 @@ func (rpl *RPLidar) Connect() error {
 	if err != nil {
 		return err
 	}
+	serialPort.SetReadDeadline(time.Now().Add(time.Second * 5))
 	rpl.options = &options
 	rpl.serialPort = serialPort
 	rpl.Connected = true
@@ -208,7 +209,7 @@ func (rpl *RPLidar) Reset() {
 
 // StartScan begins a lidar scan for the amount of scan cycles desired.
 // The scans parameter refers to how many scan cycles will occur.
-func (rpl *RPLidar) StartScan() ([]*RPLidarPoint, error) {
+func (rpl *RPLidar) StartScan(scanCycles int) ([]*RPLidarPoint, error) {
 	if !rpl.Connected {
 		return nil, errors.New("The device is not connected")
 	}
@@ -216,6 +217,7 @@ func (rpl *RPLidar) StartScan() ([]*RPLidarPoint, error) {
 		rpl.StartMotor()
 	}
 	rpl.StopScan()
+	totalScanCycles := 0
 	scan, asize, err := rpl.startScanCmd(scanByte)
 	if err != nil {
 		status, errcode, err := rpl.Health()
@@ -232,7 +234,10 @@ func (rpl *RPLidar) StartScan() ([]*RPLidarPoint, error) {
 		data := rpl.readResponse(asize)
 		newScan, quality, angle, distance := rpl.parseRawScanData(data)
 		if newScan && rpl.Scanning {
-			break
+			totalScanCycles++
+			if totalScanCycles == scanCycles {
+				break
+			}
 		}
 		rpl.Scanning = true
 		if quality > 0 && distance > 0 {
@@ -240,6 +245,20 @@ func (rpl *RPLidar) StartScan() ([]*RPLidarPoint, error) {
 		}
 	}
 	rpl.StopScan()
+	v, err := rpl.serialPort.InputWaiting()
+	if err != nil {
+		log.Fatal(err)
+	}
+	v /= 5
+	for i := 0; i < v; i++ {
+		data := rpl.readResponse(asize)
+		_, quality, angle, distance := rpl.parseRawScanData(data)
+		if quality > 0 && distance > 0 {
+			scan = append(scan, &RPLidarPoint{quality, angle, distance})
+		}
+	}
+	log.Printf("Waiting input: %v\n", v)
+
 	return scan, nil
 }
 
@@ -319,6 +338,8 @@ func (rpl *RPLidar) Health() (string, int, error) {
 
 func (rpl *RPLidar) startScanCmd(cmd byte) ([]*RPLidarPoint, int, error) {
 	scan := []*RPLidarPoint{}
+	rpl.serialPort.ResetInput()
+	time.Sleep(time.Millisecond * 100) // this works, trust me
 	rpl.sendCmd(cmd)
 	asize, single, dtype, err := rpl.readDescriptor()
 	if err != nil {
