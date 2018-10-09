@@ -51,6 +51,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"time"
 
 	"github.com/mikepb/go-serial"
@@ -66,6 +67,7 @@ const (
 	scanByte         byte   = 0x20
 	forceScanByte    byte   = 0x21
 	sampleRateByte   byte   = 0x59
+	expressScanByte  byte   = 0x82
 	descriptorLength int    = 7
 	infoLength       int    = 20
 	healthLength     int    = 3
@@ -109,6 +111,13 @@ type RPLidarPoint struct {
 	Quality  int
 	Angle    float32
 	Distance float32
+}
+
+type expressData struct {
+	newScan    bool
+	startAngle float32
+	distances  []float32
+	angles     []float32
 }
 
 // NewRPLidar creates an instance of RPLidar.
@@ -233,10 +242,10 @@ func (rpl *RPLidar) StartScan(scanCycles int) ([]*RPLidarPoint, error) {
 		data := rpl.readResponse(asize)
 		newScan, quality, angle, distance := rpl.parseRawScanData(data)
 		if newScan && rpl.Scanning {
-			totalScanCycles++
 			if totalScanCycles == scanCycles {
 				break
 			}
+			totalScanCycles++
 		}
 		rpl.Scanning = true
 		if quality > 0 && distance > 0 {
@@ -248,7 +257,7 @@ func (rpl *RPLidar) StartScan(scanCycles int) ([]*RPLidarPoint, error) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	v /= 5
+	v /= asize
 	for i := 0; i < v; i++ {
 		data := rpl.readResponse(asize)
 		_, quality, angle, distance := rpl.parseRawScanData(data)
@@ -257,6 +266,69 @@ func (rpl *RPLidar) StartScan(scanCycles int) ([]*RPLidarPoint, error) {
 		}
 	}
 
+	return scan, nil
+}
+
+// ExpressScan performs a scan as fast as possible (A2 4khz).
+// The A1 device should just use the StartScan function because of the same sampling rate (2khz).
+func (rpl *RPLidar) ExpressScan(scanCycles int) ([]*RPLidarPoint, error) {
+	if !rpl.Connected {
+		return nil, errors.New("The device is not connected")
+	}
+	if !rpl.MotorActive {
+		rpl.StartMotor()
+	}
+	rpl.StopScan()
+	requestPacket := []byte{0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22}
+	rpl.sendPayloadCmd(expressScanByte, requestPacket)
+	asize, single, _, err := rpl.readDescriptor()
+	if err != nil {
+		return nil, err
+	}
+	if asize != 84 {
+		return nil, errors.New("Express scan size not 84 bytes")
+	}
+	if !single {
+		return nil, errors.New("Expected mutliple response mode for express scan")
+	}
+	frame := 32
+	var oldExpressData, currentExpressData *expressData
+	currentExpressData = nil
+	oldExpressData = nil
+	totalCycles := 0
+	scan := []*RPLidarPoint{}
+	rpl.Scanning = true
+	for {
+		if frame == 32 {
+			if scanCycles == totalCycles {
+				break
+			}
+			totalCycles++
+			frame = 0
+			if currentExpressData == nil {
+				raw := rpl.readResponse(asize)
+				currentExpressData = rpl.parseRawExpressScanData(raw)
+			}
+			oldExpressData = currentExpressData
+			raw := rpl.readResponse(asize)
+			currentExpressData = rpl.parseRawExpressScanData(raw)
+		}
+		frame++
+		scan = append(scan, rpl.transformExpressScanData(oldExpressData, currentExpressData.startAngle, frame))
+	}
+	rpl.StopScan()
+	v, err := rpl.serialPort.InputWaiting()
+	if err != nil {
+		log.Fatal(err)
+	}
+	v /= asize
+	for i := 0; i < v; i++ {
+		data := rpl.readResponse(asize)
+		_, quality, angle, distance := rpl.parseRawScanData(data)
+		if quality > 0 && distance > 0 {
+			scan = append(scan, &RPLidarPoint{quality, angle, distance})
+		}
+	}
 	return scan, nil
 }
 
@@ -334,6 +406,7 @@ func (rpl *RPLidar) Health() (string, int, error) {
 	return status, errcode, nil
 }
 
+// Processes the command to start a scan
 func (rpl *RPLidar) startScanCmd(cmd byte) ([]*RPLidarPoint, int, error) {
 	scan := []*RPLidarPoint{}
 	rpl.serialPort.ResetInput()
@@ -376,6 +449,37 @@ func (rpl *RPLidar) parseRawScanData(data []byte) (bool, int, float32, float32) 
 	angle := float32(int(data[1])>>1+int(data[2])<<7) / 64.0
 	distance := float32(int(data[3])+(int(data[4])<<8)) / 4.0
 	return s, quality, angle, distance
+}
+
+// transformExpressScanData takes a reference angle, frame, data, and transforms it according to the slamtec specification.
+func (rpl *RPLidar) transformExpressScanData(od *expressData, newAngle float32, frame int) *RPLidarPoint {
+	angle := math.Mod(float64(float64(od.startAngle)+(math.Mod(float64(newAngle-od.startAngle), 360))/32.0*float64(frame)-float64(od.angles[frame-1])), 360)
+	distance := od.distances[frame-1]
+	return &RPLidarPoint{100, float32(angle), distance}
+}
+
+// Abandon hope, all who enter here
+// Or refer to the slamtec rplidar documentation
+func (rpl *RPLidar) parseRawExpressScanData(data []byte) *expressData {
+	sync1 := (data[0] >> 4)
+	sync2 := (data[1] >> 4)
+	sign := []float32{1, -1}
+	if sync1 != 0xA || sync2 != 0x5 {
+		log.Fatal("Sync bit check failed while parsing raw scan data")
+	}
+	newScan := (data[3] >> 7) > 1
+	startAngle := float32(int(data[2])+int((data[3]&0xFF))<<8) / 64.0
+	distances := []float32{}
+	angles := []float32{}
+	for i := 0; i < 80; i += 5 {
+		d1 := float32((int(data[i+4]) >> 2) + (int(data[i+5]) << 6))
+		a1 := float32(int(data[i+8]&0x0F)+(int(data[i+4]&0x01)<<4)) / 8.0 * sign[int(data[i+6]&0x02)>>1]
+		d2 := float32((int(data[i+6]) >> 2) + int(data[i+7]<<6))
+		a2 := float32((int(data[i+8])>>4)+(int(data[i+6]&0x01)<<4)) / 8.0 * sign[int(data[i+6]&0x02)>>1]
+		distances = append(distances, d1, d2)
+		angles = append(angles, a1, a2)
+	}
+	return &expressData{newScan, startAngle, distances, angles}
 }
 
 // sendPayloadCmd sends a command bearing extra data to the lidar.
