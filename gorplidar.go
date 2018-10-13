@@ -111,6 +111,8 @@ type RPLidarPoint struct {
 	Quality  int
 	Angle    float32
 	Distance float32
+	X        float32
+	Y        float32
 }
 
 type expressData struct {
@@ -249,7 +251,9 @@ func (rpl *RPLidar) StartScan(scanCycles int) ([]*RPLidarPoint, error) {
 		}
 		rpl.Scanning = true
 		if quality > 0 && distance > 0 {
-			scan = append(scan, &RPLidarPoint{quality, angle, distance})
+			x := float32(math.Cos(float64(angle))) * distance
+			y := float32(math.Sin(float64(angle))) * distance
+			scan = append(scan, &RPLidarPoint{quality, angle, distance, x, y})
 		}
 	}
 	rpl.StopScan()
@@ -261,8 +265,10 @@ func (rpl *RPLidar) StartScan(scanCycles int) ([]*RPLidarPoint, error) {
 	for i := 0; i < v; i++ {
 		data := rpl.readResponse(asize)
 		_, quality, angle, distance := rpl.parseRawScanData(data)
+		x := float32(math.Cos(float64(angle))) * distance
+		y := float32(math.Sin(float64(angle))) * distance
 		if quality > 0 && distance > 0 {
-			scan = append(scan, &RPLidarPoint{quality, angle, distance})
+			scan = append(scan, &RPLidarPoint{quality, angle, distance, x, y})
 		}
 	}
 
@@ -326,7 +332,9 @@ func (rpl *RPLidar) ExpressScan(scanCycles int) ([]*RPLidarPoint, error) {
 		data := rpl.readResponse(asize)
 		_, quality, angle, distance := rpl.parseRawScanData(data)
 		if quality > 0 && distance > 0 {
-			scan = append(scan, &RPLidarPoint{quality, angle, distance})
+			x := float32(math.Cos(float64(angle))) * distance
+			y := float32(math.Sin(float64(angle))) * distance
+			scan = append(scan, &RPLidarPoint{quality, angle, distance, x, y})
 		}
 	}
 	return scan, nil
@@ -455,7 +463,9 @@ func (rpl *RPLidar) parseRawScanData(data []byte) (bool, int, float32, float32) 
 func (rpl *RPLidar) transformExpressScanData(od *expressData, newAngle float32, frame int) *RPLidarPoint {
 	angle := math.Mod(float64(float64(od.startAngle)+(math.Mod(float64(newAngle-od.startAngle), 360))/32.0*float64(frame)-float64(od.angles[frame-1])), 360)
 	distance := od.distances[frame-1]
-	return &RPLidarPoint{100, float32(angle), distance}
+	x := float32(math.Cos(float64(angle))) * distance
+	y := float32(math.Sin(float64(angle))) * distance
+	return &RPLidarPoint{100, float32(angle), distance, x, y}
 }
 
 // Abandon hope, all who enter here
