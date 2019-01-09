@@ -54,7 +54,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/mikepb/go-serial"
+	serial "github.com/mikepb/go-serial"
 )
 
 const (
@@ -251,8 +251,7 @@ func (rpl *RPLidar) StartScan(scanCycles int) ([]*RPLidarPoint, error) {
 		}
 		rpl.Scanning = true
 		if quality > 0 && distance > 0 {
-			x := float32(math.Cos(float64(angle))) * distance
-			y := float32(math.Sin(float64(angle))) * distance
+			x, y := distanceAngleToCartesian(angle, distance)
 			scan = append(scan, &RPLidarPoint{quality, angle, distance, x, y})
 		}
 	}
@@ -265,8 +264,7 @@ func (rpl *RPLidar) StartScan(scanCycles int) ([]*RPLidarPoint, error) {
 	for i := 0; i < v; i++ {
 		data := rpl.readResponse(asize)
 		_, quality, angle, distance := rpl.parseRawScanData(data)
-		x := float32(math.Cos(float64(angle))) * distance
-		y := float32(math.Sin(float64(angle))) * distance
+		x, y := distanceAngleToCartesian(angle, distance)
 		if quality > 0 && distance > 0 {
 			scan = append(scan, &RPLidarPoint{quality, angle, distance, x, y})
 		}
@@ -332,8 +330,7 @@ func (rpl *RPLidar) ExpressScan(scanCycles int) ([]*RPLidarPoint, error) {
 		data := rpl.readResponse(asize)
 		_, quality, angle, distance := rpl.parseRawScanData(data)
 		if quality > 0 && distance > 0 {
-			x := float32(math.Cos(float64(angle))) * distance
-			y := float32(math.Sin(float64(angle))) * distance
+			x, y := distanceAngleToCartesian(angle, distance)
 			scan = append(scan, &RPLidarPoint{quality, angle, distance, x, y})
 		}
 	}
@@ -463,8 +460,7 @@ func (rpl *RPLidar) parseRawScanData(data []byte) (bool, int, float32, float32) 
 func (rpl *RPLidar) transformExpressScanData(od *expressData, newAngle float32, frame int) *RPLidarPoint {
 	angle := math.Mod(float64(float64(od.startAngle)+(math.Mod(float64(newAngle-od.startAngle), 360))/32.0*float64(frame)-float64(od.angles[frame-1])), 360)
 	distance := od.distances[frame-1]
-	x := float32(math.Cos(float64(angle))) * distance
-	y := float32(math.Sin(float64(angle))) * distance
+	x, y := distanceAngleToCartesian(float32(angle), distance)
 	return &RPLidarPoint{100, float32(angle), distance, x, y}
 }
 
@@ -552,4 +548,11 @@ func (rpl *RPLidar) readDescriptor() (int, bool, int, error) {
 	}
 	single := (descriptor[descriptorLength-2] == 0)
 	return int(descriptor[2]), single, int(descriptor[descriptorLength-1]), nil
+}
+
+func distanceAngleToCartesian(angleDeg float32, distance float32) (x float32, y float32) {
+	angleDeg *= (math.Pi / 180)
+	x = float32(math.Cos(float64(angleDeg))) * distance
+	y = float32(math.Sin(float64(angleDeg))) * distance
+	return x, y
 }
