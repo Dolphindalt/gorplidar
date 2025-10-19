@@ -1,5 +1,4 @@
 /*
-
 Package gorplidar provides a library to control the Slamtec RPLidar.
 
 Protocol: https://www.robotshop.com/media/files/pdf2/rpk-02-communication-protocol.pdf
@@ -42,7 +41,6 @@ Example usage:
 		lidar.StopMotor()
 		lidar.Disconnect()
 	}
-
 */
 package gorplidar
 
@@ -54,7 +52,7 @@ import (
 	"math"
 	"time"
 
-	serial "github.com/mikepb/go-serial"
+	serial "go.bug.st/serial"
 )
 
 const (
@@ -89,11 +87,11 @@ var healthStatus = map[int]string{
 
 // RPLidar holds information used to communicate through serial to the lidar.
 type RPLidar struct {
-	serialPort  *serial.Port
+	serialPort  serial.Port
 	portName    string
 	baudrate    int
 	MotorActive bool
-	options     *serial.Options
+	options     *serial.Mode
 	Connected   bool
 	Scanning    bool
 }
@@ -137,15 +135,18 @@ func (rpl *RPLidar) Connect() error {
 			return err
 		}
 	}
-	options := serial.RawOptions
-	options.Mode = serial.MODE_READ_WRITE
-	options.BitRate = rpl.baudrate
+	options := &serial.Mode{
+		BaudRate: rpl.baudrate,
+		DataBits: 8,
+		Parity:   serial.NoParity,
+		StopBits: serial.OneStopBit,
+	}
 
-	serialPort, err := options.Open(rpl.portName)
+	serialPort, err := serial.Open(rpl.portName, options)
 	if err != nil {
 		return err
 	}
-	rpl.options = &options
+	rpl.options = options
 	rpl.serialPort = serialPort
 	rpl.Connected = true
 	return nil
@@ -157,7 +158,8 @@ func (rpl *RPLidar) Disconnect() error {
 		return nil
 	}
 	rpl.Reset()
-	rpl.serialPort.Reset()
+	rpl.serialPort.ResetOutputBuffer()
+	rpl.serialPort.ResetInputBuffer()
 	err := rpl.serialPort.Close()
 	if err != nil {
 		return err
@@ -169,7 +171,7 @@ func (rpl *RPLidar) Disconnect() error {
 // PWM stands for Pulse Width Modulation.
 // pwm can be zero or less than or equal to 1023.
 func (rpl *RPLidar) PWM(pwm uint16) error {
-	if !(0 <= pwm && pwm <= maxMotorPWM) {
+	if pwm > maxMotorPWM {
 		return errors.New("specified PWM was in an invalid range")
 	}
 	payload := make([]byte, 2)
@@ -184,8 +186,10 @@ func (rpl *RPLidar) StartMotor() error {
 	if rpl.serialPort == nil {
 		return errors.New("serial port not detected")
 	}
-	rpl.options.DTR = serial.DTR_OFF // start A1 motor
-	rpl.serialPort.Apply(rpl.options)
+	err := rpl.serialPort.SetDTR(false) // start A1 motor
+	if err != nil {
+		return fmt.Errorf("failed to set DTR: %w", err)
+	}
 	rpl.PWM(defaultMotorPWM) // start A2 motor
 	rpl.MotorActive = true
 	return nil
@@ -198,8 +202,7 @@ func (rpl *RPLidar) StopMotor() error {
 	}
 	rpl.PWM(0) // stop A2 motor
 	time.Sleep(time.Millisecond * 2)
-	rpl.options.DTR = serial.DTR_ON // stop A1 motor
-	rpl.serialPort.Apply(rpl.options)
+	rpl.serialPort.SetDTR(true)
 	rpl.MotorActive = false
 	return nil
 }
@@ -221,7 +224,7 @@ func (rpl *RPLidar) Reset() {
 // The scans parameter refers to how many scan cycles will occur.
 func (rpl *RPLidar) StartScan(scanCycles int) ([]*RPLidarPoint, error) {
 	if !rpl.Connected {
-		return nil, errors.New("The device is not connected")
+		return nil, errors.New("device is not connected")
 	}
 	if !rpl.MotorActive {
 		rpl.StartMotor()
@@ -232,11 +235,11 @@ func (rpl *RPLidar) StartScan(scanCycles int) ([]*RPLidarPoint, error) {
 	if err != nil {
 		status, errcode, err := rpl.Health()
 		if err != nil {
-			log.Fatalf("Health check failed after scan failed: %v\n", err)
+			return nil, fmt.Errorf("health check failed after scan failed: %w", err)
 		} else if status == "Warning" {
-			log.Printf("Warning status on health check after failed scan: %v\n", errcode)
+			log.Println("warning status on health check after failed scan: ", errcode)
 		} else if status == "Error" {
-			log.Fatalf("Error status on health check after failed scan: %v\n", errcode)
+			return nil, fmt.Errorf("error status on health check after failed scan: %v", errcode)
 		}
 	}
 	rpl.readResponse(asize) // disregard first measurment as the results may be incomplete
@@ -256,19 +259,8 @@ func (rpl *RPLidar) StartScan(scanCycles int) ([]*RPLidarPoint, error) {
 		}
 	}
 	rpl.StopScan()
-	v, err := rpl.serialPort.InputWaiting()
-	if err != nil {
-		log.Fatal(err)
-	}
-	v /= asize
-	for i := 0; i < v; i++ {
-		data := rpl.readResponse(asize)
-		_, quality, angle, distance := rpl.parseRawScanData(data)
-		x, y := distanceAngleToCartesian(angle, distance)
-		if quality > 0 && distance > 0 {
-			scan = append(scan, &RPLidarPoint{quality, angle, distance, x, y})
-		}
-	}
+
+	rpl.readRemainingScanData(asize, scan)
 
 	return scan, nil
 }
@@ -277,7 +269,7 @@ func (rpl *RPLidar) StartScan(scanCycles int) ([]*RPLidarPoint, error) {
 // The A1 device should just use the StartScan function because of the same sampling rate (2khz).
 func (rpl *RPLidar) ExpressScan(scanCycles int) ([]*RPLidarPoint, error) {
 	if !rpl.Connected {
-		return nil, errors.New("The device is not connected")
+		return nil, errors.New("the device is not connected")
 	}
 	if !rpl.MotorActive {
 		rpl.StartMotor()
@@ -290,10 +282,10 @@ func (rpl *RPLidar) ExpressScan(scanCycles int) ([]*RPLidarPoint, error) {
 		return nil, err
 	}
 	if asize != 84 {
-		return nil, errors.New("Express scan size not 84 bytes")
+		return nil, errors.New("express scan size not 84 bytes")
 	}
 	if !single {
-		return nil, errors.New("Expected mutliple response mode for express scan")
+		return nil, errors.New("expected mutliple response mode for express scan")
 	}
 	frame := 32
 	var oldExpressData, currentExpressData *expressData
@@ -321,19 +313,9 @@ func (rpl *RPLidar) ExpressScan(scanCycles int) ([]*RPLidarPoint, error) {
 		scan = append(scan, rpl.transformExpressScanData(oldExpressData, currentExpressData.startAngle, frame))
 	}
 	rpl.StopScan()
-	v, err := rpl.serialPort.InputWaiting()
-	if err != nil {
-		log.Fatal(err)
-	}
-	v /= asize
-	for i := 0; i < v; i++ {
-		data := rpl.readResponse(asize)
-		_, quality, angle, distance := rpl.parseRawScanData(data)
-		if quality > 0 && distance > 0 {
-			x, y := distanceAngleToCartesian(angle, distance)
-			scan = append(scan, &RPLidarPoint{quality, angle, distance, x, y})
-		}
-	}
+
+	rpl.readRemainingScanData(asize, scan)
+
 	return scan, nil
 }
 
@@ -348,10 +330,10 @@ func (rpl *RPLidar) SampleRate() (int, int, error) {
 		return 0, 0, err
 	}
 	if asize != 4 {
-		return 0, 0, fmt.Errorf("Sample rate length %v, expected 4", asize)
+		return 0, 0, fmt.Errorf("sample rate length %v, expected 4", asize)
 	}
 	if !single {
-		return 0, 0, errors.New("Expected single response mode for sample rate")
+		return 0, 0, errors.New("expected single response mode for sample rate")
 	}
 	data := rpl.readResponse(asize)
 	startScanSampleRate := int(data[0]) + int(data[1])
@@ -367,13 +349,13 @@ func (rpl *RPLidar) DeviceInfo() (*RPLidarInfo, error) {
 		return nil, err
 	}
 	if asize != infoLength {
-		return nil, errors.New("Unexpected size of get health response")
+		return nil, errors.New("unexpected size of get health response")
 	}
 	if !single {
-		return nil, errors.New("Expected single reponse mode")
+		return nil, errors.New("expected single reponse mode")
 	}
 	if dtype != infoType {
-		return nil, errors.New("Expected response of get health type")
+		return nil, errors.New("expected response of get health type")
 	}
 	data := rpl.readResponse(asize)
 	serialHex := fmt.Sprintf("%x", data[4:])
@@ -397,13 +379,13 @@ func (rpl *RPLidar) Health() (string, int, error) {
 		return "", 0, err
 	}
 	if asize != healthLength {
-		return "", 0, errors.New("Unexpected size of get health response")
+		return "", 0, errors.New("unexpected size of get health response")
 	}
 	if !single {
-		return "", 0, errors.New("Expected single reponse mode")
+		return "", 0, errors.New("expected single reponse mode")
 	}
 	if dtype != healthType {
-		return "", 0, errors.New("Expected response of get health type")
+		return "", 0, errors.New("expected response of get health type")
 	}
 	data := rpl.readResponse(asize)
 	status := healthStatus[int(data[0])]
@@ -414,7 +396,7 @@ func (rpl *RPLidar) Health() (string, int, error) {
 // Processes the command to start a scan
 func (rpl *RPLidar) startScanCmd(cmd byte) ([]*RPLidarPoint, int, error) {
 	scan := []*RPLidarPoint{}
-	rpl.serialPort.ResetInput()
+	rpl.serialPort.ResetInputBuffer()
 	time.Sleep(time.Millisecond * 100) // this works, trust me
 	rpl.sendCmd(cmd)
 	asize, single, dtype, err := rpl.readDescriptor()
@@ -422,13 +404,13 @@ func (rpl *RPLidar) startScanCmd(cmd byte) ([]*RPLidarPoint, int, error) {
 		return nil, 0, err
 	}
 	if asize != 5 {
-		return nil, 0, fmt.Errorf("Scan length %v, expected 5", asize)
+		return nil, 0, fmt.Errorf("scan length %v, expected 5", asize)
 	}
 	if single {
-		return nil, 0, errors.New("Expected multiple response mode for start scan")
+		return nil, 0, errors.New("expected multiple response mode for start scan")
 	}
 	if dtype != scanType {
-		return nil, 0, errors.New("Expected response of start scan type")
+		return nil, 0, errors.New("expected response of start scan type")
 	}
 	return scan, asize, nil
 }
@@ -493,9 +475,7 @@ func (rpl *RPLidar) sendPayloadCmd(cmd byte, payload []byte) {
 	req := []byte{}
 	size := byte(len(payload))
 	req = append(req, syncByte, cmd, size)
-	for _, b := range payload {
-		req = append(req, b)
-	}
+	req = append(req, payload...)
 	checksum := byte(0)
 	for _, b := range req {
 		checksum ^= b
@@ -555,4 +535,28 @@ func distanceAngleToCartesian(angleDeg float32, distance float32) (x float32, y 
 	x = float32(math.Cos(float64(angleDeg))) * distance
 	y = float32(math.Sin(float64(angleDeg))) * distance
 	return x, y
+}
+
+// readRemainingScanData is intended to be called after a scan is stopped to read out any
+// remaining data in the serial data buffer that corresponds to a valid sample point.
+func (rpl *RPLidar) readRemainingScanData(sampleSize int, dataOut []*RPLidarPoint) {
+	buffer := make([]byte, 0, 4096)
+	single_sample_buffer := make([]byte, sampleSize)
+	for {
+		n, err := rpl.serialPort.Read(single_sample_buffer)
+		if err != nil {
+			break
+		}
+		buffer = append(buffer, single_sample_buffer[:n]...)
+	}
+
+	v := len(buffer) / sampleSize
+	for i := range v {
+		data := buffer[i*sampleSize : (i+1)*sampleSize]
+		_, quality, angle, distance := rpl.parseRawScanData(data)
+		x, y := distanceAngleToCartesian(angle, distance)
+		if quality > 0 && distance > 0 {
+			dataOut = append(dataOut, &RPLidarPoint{quality, angle, distance, x, y})
+		}
+	}
 }
