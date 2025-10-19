@@ -54,7 +54,7 @@ import (
 	"math"
 	"time"
 
-	serial "github.com/mikepb/go-serial"
+	serial "go.bug.st/serial"
 )
 
 const (
