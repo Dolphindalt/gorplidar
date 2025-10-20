@@ -4,8 +4,6 @@
 
 Package gorplidar provides a library to control the Slamtec RPLidar.
 
-Protocol: https://www.robotshop.com/media/files/pdf2/rpk-02-communication-protocol.pdf
-
 This package aims to satisfy the communication protocol specified in the document linked above.
 
 Currently, not all protocols are supported. Configurability could also be improved,
